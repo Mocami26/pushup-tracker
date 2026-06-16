@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Liegestütze Tracker</title>
+  <style>
+    :root {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #172033;
+      background: #f4f6f8;
+    }
+    body { margin: 0; padding: 24px; }
+    .app { max-width: 980px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    h2 { margin: 0 0 12px; font-size: 22px; }
+    .muted { color: #667085; }
+    .card {
+      background: white;
+      border-radius: 18px;
+      padding: 20px;
+      margin: 16px 0;
+      box-shadow: 0 8px 24px rgba(16, 24, 40, 0.08);
+    }
+    label { display: block; font-weight: 700; margin-bottom: 8px; }
+    input, select {
+      width: 100%; box-sizing: border-box; padding: 14px 16px;
+      border: 1px solid #d0d5dd; border-radius: 12px; font-size: 16px;
+      background: white;
+    }
+    .row { display: grid; grid-template-columns: 1fr 180px; gap: 12px; align-items: end; }
+    .entry-row { display: grid; grid-template-columns: 1fr 1fr 180px; gap: 12px; align-items: end; }
+    .button-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button {
+      border: 0; border-radius: 12px; padding: 14px 16px; font-weight: 800;
+      cursor: pointer; background: #1d4ed8; color: white; font-size: 16px;
+    }
+    button.secondary { background: #344054; }
+    button.danger { background: #b42318; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .stat { background: #f8fafc; border: 1px solid #eaecf0; border-radius: 14px; padding: 16px; }
+    .stat .value { font-size: 28px; font-weight: 900; margin-top: 6px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 12px; border-bottom: 1px solid #eaecf0; text-align: left; }
+    th { color: #475467; font-size: 14px; }
+    .status { margin-top: 10px; font-weight: 700; }
+    .ok { color: #027a48; }
+    .error { color: #b42318; }
+    .help { font-size: 14px; line-height: 1.45; }
+    code { background: #eef2ff; padding: 2px 5px; border-radius: 6px; }
+    @media (max-width: 820px) {
+      body { padding: 14px; }
+      .row, .entry-row, .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 26px; }
+      button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1>Liegestütze Tracker</h1>
+    <div class="muted">Mit Datumseingabe, Google-Sheets-Synchronisierung und genau einem Wert pro Datum.</div>
+
+    <section class="card">
+      <h2>Synchronisierung</h2>
+      <label for="scriptUrl">Google Apps Script URL</label>
+      <div class="row">
+        <input id="scriptUrl" placeholder="https://script.google.com/macros/s/.../exec" />
+        <button class="secondary" id="saveUrlBtn">URL speichern</button>
+      </div>
+      <div class="help muted" style="margin-top:10px;">
+        Die URL wird lokal in diesem Browser gespeichert. Trage sie auf Handy und PC einmal ein.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Eintrag erfassen</h2>
+      <div class="entry-row">
+        <div>
+          <label for="date">Datum</label>
+          <input id="date" type="date" />
+        </div>
+        <div>
+          <label for="pushups">Liegestütze</label>
+          <input id="pushups" type="number" min="0" step="1" placeholder="z. B. 30" />
+        </div>
+        <button id="saveBtn">Speichern</button>
+      </div>
+      <div id="status" class="status muted"></div>
+    </section>
+
+    <section class="grid">
+      <div class="stat"><div class="muted">Gesamt</div><div id="total" class="value">0</div></div>
+      <div class="stat"><div class="muted">Ø pro Tag</div><div id="average" class="value">0</div></div>
+      <div class="stat"><div class="muted">Aktuelle Serie</div><div id="streak" class="value">0</div></div>
+      <div class="stat"><div class="muted">Bester Tag</div><div id="best" class="value">0</div></div>
+    </section>
+
+    <section class="card">
+      <div class="row" style="grid-template-columns: 1fr 180px; align-items:center;">
+        <h2 style="margin:0;">Verlauf</h2>
+        <button class="secondary" id="reloadBtn">Neu laden</button>
+      </div>
+      <div style="overflow:auto; margin-top:12px;">
+        <table>
+          <thead><tr><th>Datum</th><th>Liegestütze</th></tr></thead>
+          <tbody id="history"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+<script>
+const URL_KEY = "pushupTrackerGoogleScriptUrl";
+const LOCAL_KEY = "pushupTrackerLocalEntriesV2";
+let entries = [];
+
+const el = id => document.getElementById(id);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+
+function setStatus(text, type = "muted") {
+  const status = el("status");
+  status.textContent = text;
+  status.className = "status " + type;
+}
+
+function getScriptUrl() {
+  return el("scriptUrl").value.trim();
+}
+
+function saveLocal() {
+  localStorage.setItem(LOCAL_KEY, JSON.stringify(entries));
+}
+
+function loadLocal() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(LOCAL_KEY) || "[]");
+    entries = normalizeEntries(stored);
+  } catch (_) {
+    entries = [];
+  }
+}
+
+function normalizeEntries(data) {
+  if (!Array.isArray(data)) return [];
+  return data
+    .map(item => ({
+      date: String(item.date || item.Datum || "").slice(0, 10),
+      pushups: Number(item.pushups ?? item["Liegestütze"] ?? item.liegestuetze ?? item[1]) || 0
+    }))
+    .filter(entry => /^\d{4}-\d{2}-\d{2}$/.test(entry.date))
+    .filter(entry => Number.isFinite(entry.pushups) && entry.pushups >= 0);
+}
+
+function normalizeRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter(row => Array.isArray(row) && row.length >= 2)
+    .filter(row => String(row[0]).toLowerCase() !== "datum")
+    .map(row => ({ date: String(row[0]).slice(0, 10), pushups: Number(row[1]) || 0 }))
+    .filter(entry => /^\d{4}-\d{2}-\d{2}$/.test(entry.date));
+}
+
+function mergeSameDates(data) {
+  const map = new Map();
+  for (const entry of data) {
+    map.set(entry.date, entry.pushups);
+  }
+  return [...map.entries()]
+    .map(([date, pushups]) => ({ date, pushups }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+function upsertEntry(entry) {
+  entries = mergeSameDates(entries);
+  const index = entries.findIndex(e => e.date === entry.date);
+  if (index >= 0) {
+    entries[index] = entry;
+  } else {
+    entries.push(entry);
+  }
+  entries = mergeSameDates(entries);
+}
+
+function calculateStreak(data) {
+  const dateSet = new Set(data.filter(e => e.pushups > 0).map(e => e.date));
+  let streak = 0;
+  const cursor = new Date(todayISO() + "T00:00:00");
+  while (true) {
+    const date = cursor.toISOString().slice(0, 10);
+    if (!dateSet.has(date)) break;
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
+function render() {
+  const data = mergeSameDates(entries);
+  const total = data.reduce((sum, e) => sum + e.pushups, 0);
+  const average = data.length ? total / data.length : 0;
+  const best = data.length ? Math.max(...data.map(e => e.pushups)) : 0;
+
+  el("total").textContent = total;
+  el("average").textContent = average.toFixed(1).replace(".0", "");
+  el("streak").textContent = calculateStreak(data) + " Tage";
+  el("best").textContent = best;
+
+  el("history").innerHTML = data.length
+    ? data.map(e => `<tr><td>${e.date}</td><td>${e.pushups}</td></tr>`).join("")
+    : `<tr><td colspan="2" class="muted">Noch keine Einträge vorhanden.</td></tr>`;
+}
+
+async function loadEntries() {
+  const url = getScriptUrl();
+  if (!url) {
+    loadLocal();
+    render();
+    setStatus("Keine Google-URL eingetragen. Lokale Daten wurden geladen.", "muted");
+    return;
+  }
+
+  setStatus("Daten werden aus Google Sheets geladen ...");
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const rows = await response.json();
+    entries = normalizeRows(rows);
+    saveLocal();
+    render();
+    setStatus("Daten geladen.", "ok");
+  } catch (error) {
+    loadLocal();
+    render();
+    setStatus("Google Sheets konnte nicht geladen werden. Lokale Sicherung wurde angezeigt.", "error");
+  }
+}
+
+async function postEntry(entry) {
+  const url = getScriptUrl();
+  if (!url) throw new Error("Keine Google-URL");
+  await fetch(url, {
+    method: "POST",
+    mode: "no-cors",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ date: entry.date, pushups: entry.pushups })
+  });
+}
+
+async function saveEntry() {
+  const date = el("date").value;
+  const amount = Number(el("pushups").value);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return setStatus("Bitte ein gültiges Datum auswählen.", "error");
+  if (!Number.isInteger(amount) || amount < 0) return setStatus("Bitte eine ganze Zahl ab 0 eingeben.", "error");
+
+  const entry = { date, pushups: amount };
+  const existed = mergeSameDates(entries).some(e => e.date === date);
+  upsertEntry(entry);
+  saveLocal();
+  render();
+
+  if (!getScriptUrl()) {
+    el("pushups").value = "";
+    setStatus(existed ? "Bestehender lokaler Eintrag wurde überschrieben." : "Lokal gespeichert. Für Synchronisierung bitte Google-URL eintragen.", "ok");
+    return;
+  }
+
+  el("saveBtn").disabled = true;
+  setStatus("Eintrag wird in Google Sheets gespeichert ...");
+  try {
+    await postEntry(entry);
+    el("pushups").value = "";
+    setStatus(existed ? "Bestehender Eintrag wurde überschrieben. Daten werden neu geladen ..." : "Gespeichert. Daten werden neu geladen ...", "ok");
+    setTimeout(loadEntries, 1000);
+  } catch (error) {
+    setStatus("Lokal gespeichert, aber Google-Sync fehlgeschlagen.", "error");
+  } finally {
+    el("saveBtn").disabled = false;
+  }
+}
+
+el("saveUrlBtn").addEventListener("click", () => {
+  localStorage.setItem(URL_KEY, getScriptUrl());
+  setStatus("URL gespeichert.", "ok");
+  loadEntries();
+});
+el("saveBtn").addEventListener("click", saveEntry);
+el("reloadBtn").addEventListener("click", loadEntries);
+el("pushups").addEventListener("keydown", e => { if (e.key === "Enter") saveEntry(); });
+
+el("scriptUrl").value = localStorage.getItem(URL_KEY) || "";
+el("date").value = todayISO();
+loadEntries();
+</script>
+</body>
+</html>
